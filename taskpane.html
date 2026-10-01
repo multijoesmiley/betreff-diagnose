@@ -12,23 +12,29 @@
   table { border-collapse: collapse; width: 100%; }
   td { border-bottom: 1px solid #ddd; padding: 3px 4px; vertical-align: top; word-break: break-all; }
   td:first-child { white-space: nowrap; color: #555; width: 1%; }
-  .ok { color: #0a7a0a; font-weight: 600; } .bad { color: #b00020; font-weight: 600; }
+  .ok { color: #0a7a0a; font-weight: 600; } .bad { color: #b00020; font-weight: 600; } .warn { color: #a05a00; font-weight: 600; }
   button { margin: 8px 6px 8px 0; padding: 4px 10px; }
-  pre { background: #f4f4f4; padding: 6px; font-size: 11px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+  pre, textarea { background: #f4f4f4; padding: 6px; font-size: 11px; max-height: 160px; overflow: auto; white-space: pre-wrap; width: 95%; }
 </style>
 </head>
 <body>
-<h1>Betreff-Diagnose <small>(rein lesend)</small></h1>
-<div class="hint">Zeigt Kontext der aktuell gewaehlten Mail. Aendert nichts. Bei angepinntem Fenster wird bei jedem Mailwechsel ein Verlaufseintrag ergaenzt.</div>
+<h1>Betreff-Diagnose <small>(rein lesend) &middot; v2</small></h1>
+<div class="hint">Zeigt Kontext der Mail, fuer die dieses Fenster geoeffnet wurde. Aendert nichts.</div>
 <div id="status">Warte auf Office ...</div>
+<div id="bindung" class="hint"></div>
 <table id="tab"></table>
 <button id="neu">Neu lesen</button><button id="kopie">Als Text kopieren</button>
-<div class="hint">Verlauf (neueste oben) - dient dem A/B-Wechseltest:</div>
+<label class="hint"><input type="checkbox" id="poll"> Polling alle 2 s (nur Diagnose)</label>
+<div id="kopiestatus" class="hint"></div>
+<textarea id="kopietext" rows="4" style="display:none" readonly></textarea>
+<div class="hint">Technik: <span id="technik"></span></div>
+<div class="hint">Verlauf (neueste oben; Quelle in []):</div>
 <pre id="verlauf"></pre>
 <script src="diag.js"></script>
 <script>
-  var verlauf = [], letzte = null;
-  function zeige(d) {
+  var verlauf = [], letzte = null, erstId = null, ereignisse = 0, handlerStatus = "nicht registriert", timer = null;
+
+  function zeige(d, quelle) {
     letzte = d;
     var s = document.getElementById("status");
     s.className = d.ok ? "ok" : "bad";
@@ -39,19 +45,49 @@
       var tr = t.insertRow(); tr.insertCell().textContent = k;
       tr.insertCell().textContent = d[k] == null ? "(leer)" : d[k];
     });
-    verlauf.unshift(d.zeit.substr(11, 8) + " | " + (d.subject == null ? "-" : d.subject) + " | " + (d.restId ? d.restId.substr(-24) : "keine restId"));
-    document.getElementById("verlauf").textContent = verlauf.slice(0, 30).join("\n");
+    // Bindung: bleibt die itemId trotz Neu-Lesen/Ereignis/Polling gleich, ist das Fenster an die Oeffnungs-Mail gebunden.
+    if (erstId === null && d.itemId) erstId = d.itemId;
+    var b = document.getElementById("bindung");
+    if (quelle !== "Start" && d.itemId && d.itemId === erstId) { b.className = "warn"; b.textContent = "Unveraendert gegenueber dem Oeffnen. Ist in Outlook eine andere Mail gewaehlt, ist dieses Fenster an die Oeffnungs-Mail gebunden (Pinning ist in Outlook.com nicht verfuegbar): Fenster schliessen und ueber 'Weitere Apps' neu oeffnen."; }
+    else if (d.itemId && d.itemId !== erstId) { b.className = "ok"; b.textContent = "Mailwechsel erkannt (itemId anders als beim Oeffnen)."; }
+    else { b.className = "hint"; b.textContent = ""; }
+    document.getElementById("technik").textContent = "ItemChanged-Handler: " + handlerStatus + "; Ereignisse: " + ereignisse;
+    verlauf.unshift(d.zeit.substr(11, 8) + " [" + quelle + "] " + (d.subject == null ? "-" : d.subject) + " | " + (d.restId ? d.restId.substr(-24) : "keine restId"));
+    document.getElementById("verlauf").textContent = verlauf.slice(0, 40).join("\n");
   }
-  function lesen() { BetreffDiag.collectDiagnosis(Office).then(zeige); }
+
+  function lesen(quelle) { return BetreffDiag.collectDiagnosis(Office).then(function (d) { zeige(d, quelle); }); }
+
+  // Kopieren: 1) synchron per execCommand (funktioniert im iframe, braucht Klick-Geste), 2) Clipboard-API, 3) sichtbares, markiertes Textfeld.
+  function kopieren() {
+    var txt = JSON.stringify(letzte, null, 1), st = document.getElementById("kopiestatus"), ta = document.getElementById("kopietext");
+    function zeigeFeld(msg) { ta.style.display = "block"; ta.value = txt; ta.focus(); ta.select(); st.className = "warn"; st.textContent = msg; }
+    var ok = false;
+    try {
+      ta.style.display = "block"; ta.value = txt; ta.focus(); ta.select();
+      ok = document.execCommand("copy");
+    } catch (e) { ok = false; }
+    if (ok) { st.className = "ok"; st.textContent = "Kopiert (execCommand). Text steht zusaetzlich unten."; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () { st.className = "ok"; st.textContent = "Kopiert (Clipboard-API)."; },
+        function () { zeigeFeld("Automatisches Kopieren blockiert - Text ist markiert: bitte Strg+C druecken."); });
+    } else { zeigeFeld("Automatisches Kopieren nicht verfuegbar - Text ist markiert: bitte Strg+C druecken."); }
+  }
+
   Office.onReady(function (info) {
     if (info.host !== Office.HostType.Outlook) { document.getElementById("status").textContent = "Kein Outlook-Host"; return; }
-    document.getElementById("neu").onclick = lesen;
-    document.getElementById("kopie").onclick = function () {
-      var txt = JSON.stringify(letzte, null, 1);
-      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).catch(function () { document.getElementById("verlauf").textContent = txt; });
+    document.getElementById("neu").onclick = function () { lesen("manuell"); };
+    document.getElementById("kopie").onclick = kopieren;
+    document.getElementById("poll").onchange = function () {
+      if (this.checked) timer = setInterval(function () { lesen("Polling"); }, 2000); else { clearInterval(timer); timer = null; }
     };
-    try { Office.context.mailbox.addHandlerAsync(Office.EventType.ItemChanged, lesen); } catch (e) { /* aeltere Clients: nur manuell */ }
-    lesen();
+    try {
+      Office.context.mailbox.addHandlerAsync(Office.EventType.ItemChanged, function () {
+        ereignisse++;
+        lesen("ItemChanged");
+        setTimeout(function () { lesen("ItemChanged+400ms"); }, 400); // Sicherheitsnachlesen
+      }, function (res) { handlerStatus = res.status === Office.AsyncResultStatus.Succeeded ? "registriert (OK)" : "FEHLER: " + (res.error && res.error.message); lesen("Start"); });
+    } catch (e) { handlerStatus = "Ausnahme: " + e.message; lesen("Start"); }
   });
 </script>
 </body>
