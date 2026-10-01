@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Betreff-Diagnose (nur lesen)</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  body { font: 14px Segoe UI, sans-serif; margin: 10px; color: #222; }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  .hint { color: #555; font-size: 12px; margin-bottom: 8px; }
+  table { border-collapse: collapse; width: 100%; }
+  td { border-bottom: 1px solid #ddd; padding: 3px 4px; vertical-align: top; word-break: break-all; }
+  td:first-child { white-space: nowrap; color: #555; width: 1%; }
+  .ok { color: #0a7a0a; font-weight: 600; } .bad { color: #b00020; font-weight: 600; }
+  button { margin: 8px 6px 8px 0; padding: 4px 10px; }
+  pre { background: #f4f4f4; padding: 6px; font-size: 11px; max-height: 160px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Betreff-Diagnose <small>(rein lesend)</small></h1>
+<div class="hint">Zeigt Kontext der aktuell gewaehlten Mail. Aendert nichts. Bei angepinntem Fenster wird bei jedem Mailwechsel ein Verlaufseintrag ergaenzt.</div>
+<div id="status">Warte auf Office ...</div>
+<table id="tab"></table>
+<button id="neu">Neu lesen</button><button id="kopie">Als Text kopieren</button>
+<div class="hint">Verlauf (neueste oben) - dient dem A/B-Wechseltest:</div>
+<pre id="verlauf"></pre>
+<script src="diag.js"></script>
+<script>
+  var verlauf = [], letzte = null;
+  function zeige(d) {
+    letzte = d;
+    var s = document.getElementById("status");
+    s.className = d.ok ? "ok" : "bad";
+    s.textContent = d.ok ? "OK: READ-Mail mit Betreff, itemId und REST-ID" : "NICHT OK: " + (d.fehler.join("; ") || d.modus || "unvollstaendig");
+    var rows = ["zeit","host","postfach","modus","itemType","itemClass","subject","itemId","restId","internetMessageId","conversationId","dateTimeCreated"];
+    var t = document.getElementById("tab"); t.innerHTML = "";
+    rows.forEach(function (k) {
+      var tr = t.insertRow(); tr.insertCell().textContent = k;
+      tr.insertCell().textContent = d[k] == null ? "(leer)" : d[k];
+    });
+    verlauf.unshift(d.zeit.substr(11, 8) + " | " + (d.subject == null ? "-" : d.subject) + " | " + (d.restId ? d.restId.substr(-24) : "keine restId"));
+    document.getElementById("verlauf").textContent = verlauf.slice(0, 30).join("\n");
+  }
+  function lesen() { BetreffDiag.collectDiagnosis(Office).then(zeige); }
+  Office.onReady(function (info) {
+    if (info.host !== Office.HostType.Outlook) { document.getElementById("status").textContent = "Kein Outlook-Host"; return; }
+    document.getElementById("neu").onclick = lesen;
+    document.getElementById("kopie").onclick = function () {
+      var txt = JSON.stringify(letzte, null, 1);
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).catch(function () { document.getElementById("verlauf").textContent = txt; });
+    };
+    try { Office.context.mailbox.addHandlerAsync(Office.EventType.ItemChanged, lesen); } catch (e) { /* aeltere Clients: nur manuell */ }
+    lesen();
+  });
+</script>
+</body>
+</html>
